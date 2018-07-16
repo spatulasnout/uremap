@@ -2,19 +2,20 @@
 # encoding: utf-8
 
 require 'fileutils'
+require 'find'
 
 
 module TastySpleen
 
   class URemap
-    URemapArgs = Struct.new(:uremap, :gremap)
+    URemapArgs = Struct.new(:uremap, :gremap, :dry_run, :verbose)
   
     class URemapArgParser
       URemapArgs = TastySpleen::URemap::URemapArgs
       ParseState = Struct.new(:data, :arg_files_parsed)
       
       def parse_switches(argv)
-        st = ParseState.new(URemapArgs.new({}, {}), {})
+        st = ParseState.new(URemapArgs.new({}, {}, false, false), {})
         buf = argv.join("\n")
         parse_argbuf(st, buf)
         st.data
@@ -64,6 +65,10 @@ module TastySpleen
           (path.empty?) and raise("FATAL: missing path to -f argument")
           (test(?f, path)) or raise("FATAL: argfile not found: #{path.inspect}")
           parse_argfile(st, path)
+        elsif line =~ /\A\s*--dry-run\s*\z/
+          st.data.dry_run = true
+        elsif line =~ /\A\s*--verbose\s*\z/
+          st.data.verbose = true
         else
           raise("FATAL: unrecognized argument: #{line.inspect}")
         end
@@ -84,6 +89,9 @@ module TastySpleen
     def initialize
       @uremap = {}
       @gremap = {}
+      @paths = []
+      @dry_run = false
+      @verbose = false
     end
     
     def parse_args(argv=ARGV)
@@ -91,32 +99,61 @@ module TastySpleen
       switches, args = parser.partition_switches_and_args(argv)
 warn "switches=#{switches.inspect}"
 warn "args=#{args.inspect}"
+      @paths = args
       data = parser.parse_switches(switches)
       @uremap = data.uremap
       @gremap = data.gremap
+      @dry_run = data.dry_run
+      @verbose = data.verbose
 warn "uremap=#{@uremap.inspect}"
 warn "gremap=#{@gremap.inspect}"
+warn "dry_run=#{@dry_run.inspect}"
+warn "verbose=#{@verbose.inspect}"
     end
     
-    protected
-    
-    def is_uid_remap?
+    def preflight
+      (@paths.empty?) and raise("FATAL: no path arguments supplied")
+      (@uremap.empty? && @gremap.empty?) and raise("FATAL: nothing to do (no uremaps or gremaps supplied)")
+      @paths.each {|path| (test(?d, path)) or raise("FATAL: path not found: #{path.inspect}")}
     end
     
+    def uremap_path_trees(paths=@paths)
+      Find.find(*paths) do |path|
+        begin
+          uremap_path(path)
+        rescue SignalException, SystemExit => ex
+          raise
+        rescue Exception => ex
+          warn("ERROR: #{ex.message}")
+        end
+      end
+    end
     
-  # Find.find(root) do |path|
-  #   begin
-  #     if test(?f, path) && looks_like_cache_key?(path)
-  #       # @logger.dbg("#{self.class.name}: purging cache file #{path.inspect}")
-  #       File.unlink(path)
-  #     end
-  #   rescue SignalException, SystemExit => ex
-  #     raise
-  #   rescue Exception => ex
-  #     @logger.warn("#{self.class.name}.#{__method__}: exception: #{ex.message}")
-  #   end
-  # end
-    
+    def uremap_path(path)
+      st = File.lstat(path)
+      new_uid, new_gid = nil, nil
+      if (uid = st.uid) > 0
+        if @uremap.key?(uid)
+          new_uid = @uremap[uid]
+        end
+      end
+      if (gid = st.gid) > 0
+        if @gremap.key?(gid)
+          new_gid = @uremap[gid]
+        end
+      end
+      if new_uid || new_gid
+        if st.file? && (st.setuid? || st.setgid?)
+          warn("WARN: changing setuid/setgid file: #{path.inspect} - (u#{uid}=>#{new_uid||uid}, g#{gid}=>#{new_gid||gid})")
+        end
+        if @verbose
+          puts("u#{uid}=>#{new_uid||uid}\tg#{gid}=>#{new_gid||gid}\t#{path}")
+        end
+        unless @dry_run
+          File.lchown(new_uid, new_gid, path)
+        end
+      end
+    end
     
   end # URemap
 
@@ -124,6 +161,12 @@ end # TastySpleen
 
 
 if $0 == __FILE__
-  uremap = TastySpleen::URemap.new
-  uremap.parse_args(ARGV)
+  begin
+    uremap = TastySpleen::URemap.new
+    uremap.parse_args(ARGV)
+    uremap.preflight
+    uremap.uremap_path_trees
+  rescue Exception => ex
+    warn("ERROR: #{ex.message}")
+  end
 end
