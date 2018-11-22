@@ -97,8 +97,8 @@ module TastySpleen
     def parse_args(argv=ARGV)
       parser = URemapArgParser.new
       switches, args = parser.partition_switches_and_args(argv)
-warn "switches=#{switches.inspect}"
-warn "args=#{args.inspect}"
+# warn "switches=#{switches.inspect}"
+# warn "args=#{args.inspect}"
       @paths = args
       data = parser.parse_switches(switches)
       @uremap = data.uremap
@@ -107,8 +107,8 @@ warn "args=#{args.inspect}"
       @verbose = data.verbose
 warn "uremap=#{@uremap.inspect}"
 warn "gremap=#{@gremap.inspect}"
-warn "dry_run=#{@dry_run.inspect}"
-warn "verbose=#{@verbose.inspect}"
+# warn "dry_run=#{@dry_run.inspect}"
+# warn "verbose=#{@verbose.inspect}"
     end
     
     def preflight
@@ -139,18 +139,21 @@ warn "verbose=#{@verbose.inspect}"
       end
       if (gid = st.gid) > 0
         if @gremap.key?(gid)
-          new_gid = @uremap[gid]
+          new_gid = @gremap[gid]
         end
       end
       if new_uid || new_gid
         if st.file? && (st.setuid? || st.setgid?)
-          warn("WARN: changing setuid/setgid file: #{path.inspect} - (u#{uid}=>#{new_uid||uid}, g#{gid}=>#{new_gid||gid})")
+          warn("WARN: changing setuid/setgid file: #{path.inspect} - (u#{uid}=>#{new_uid||uid}, g#{gid}=>#{new_gid||gid}, mode=#{st.mode.to_s(8)})")
         end
         if @verbose
-          puts("u#{uid}=>#{new_uid||uid}\tg#{gid}=>#{new_gid||gid}\t#{path}")
+          ustr = (new_uid) ? "u#{uid}=>#{new_uid}" : "(u#{uid})"
+          gstr = (new_gid) ? "g#{gid}=>#{new_gid}" : "(g#{gid})"
+          puts("#{ustr}\t#{gstr}\t#{path}")
         end
         unless @dry_run
           File.lchown(new_uid, new_gid, path)
+          File.chmod(st.mode, path)  # ruby's lchown seems to have some nanny behavior and clears setuid/setgid bits, so restore the original mode
         end
       end
     end
